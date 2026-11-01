@@ -155,6 +155,8 @@ pub enum LineKind {
     Hist,
     /// A square marker at each finite point.
     Dots,
+    /// A larger square marker at each finite point, for signals.
+    Marks,
     /// A flat dash across each finite point's bar, with no joins between bars.
     Steps,
     /// The area between the line and the baseline, filled (oscillator waves).
@@ -399,7 +401,7 @@ impl ChartRenderer {
                         LineKind::Line => Pipe::Line,
                         LineKind::Area => Pipe::Area,
                         LineKind::Hist => Pipe::Hist,
-                        LineKind::Dots => Pipe::Dots,
+                        LineKind::Dots | LineKind::Marks => Pipe::Dots,
                         LineKind::Steps => Pipe::Steps,
                         LineKind::Fill => Pipe::Fill,
                     };

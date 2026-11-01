@@ -521,7 +521,7 @@ async fn earnings_for(_: &str) -> Vec<Earning> {
 }
 
 fn overlay(values: &[f64], color: egui::Color32, kind: LineKind) -> Overlay {
-    let line = if kind == LineKind::Dots { marker_ref(values) } else { line_ref(values) };
+    let line = if matches!(kind, LineKind::Dots | LineKind::Marks) { marker_ref(values) } else { line_ref(values) };
     Overlay { line, color: theme::rgba(color), kind, scale: 1.0 }
 }
 
@@ -564,6 +564,7 @@ pub fn build_indicators(
                         Plot::Line => LineKind::Line,
                         Plot::Hist => LineKind::Hist,
                         Plot::Dots => LineKind::Dots,
+                        Plot::Marks => LineKind::Marks,
                         Plot::Steps => LineKind::Steps,
                         Plot::Fill => LineKind::Fill,
                     };

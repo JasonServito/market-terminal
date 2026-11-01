@@ -91,6 +91,7 @@ struct Filing {
 
 /// Older filings pages named by a submissions file (`filings.files`), newest first, with the
 /// last date each covers.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn older_pages(submissions: &Value) -> Vec<(String, Option<NaiveDate>)> {
     let files = submissions.pointer("/filings/files").and_then(Value::as_array).cloned().unwrap_or_default();
     files

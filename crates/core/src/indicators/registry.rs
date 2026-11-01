@@ -70,6 +70,8 @@ pub enum Plot {
     Hist,
     /// A marker per defined value.
     Dots,
+    /// A larger marker per defined value, for signals that should stand out (crosses).
+    Marks,
     /// A flat dash across each bar, so a level that changes (a new session's pivot)
     /// starts afresh instead of joining the previous one.
     Steps,
@@ -405,8 +407,8 @@ fn waves(d: &Ohlcv, n1: usize, n2: usize) -> Vec<Output> {
     vec![
         out("Wave 2", wt2, Plot::Fill, Tone::Fixed([36, 86, 214, 235])),
         out("Wave 1", wt1, Plot::Fill, Tone::Fixed([96, 176, 255, 150])),
-        out("Turn up", turn_up, Plot::Dots, Tone::Up),
-        out("Turn down", turn_down, Plot::Dots, Tone::Down),
+        out("Turn up", turn_up, Plot::Marks, Tone::Up),
+        out("Turn down", turn_down, Plot::Marks, Tone::Down),
     ]
 }
 
@@ -842,8 +844,7 @@ fn catalog() -> Vec<Def> {
                 2..2,
                 [
                     out("RSI", centred(rsi(i.c(), n(p, 2))), Plot::Line, Tone::Fixed([186, 104, 255, 255])),
-                    out("Stoch K", centred(s.k), Plot::Line, Tone::Fixed([38, 214, 220, 255])),
-                    out("Stoch D", centred(s.d), Plot::Line, Tone::Fixed([255, 160, 90, 255])),
+                    out("Stoch RSI", centred(s.k), Plot::Line, Tone::Fixed([38, 214, 220, 255])),
                 ],
             );
             outs

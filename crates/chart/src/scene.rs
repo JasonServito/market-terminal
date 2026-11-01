@@ -81,7 +81,8 @@ pub fn line_ref(values: &[f64]) -> LineRef {
     LineRef { key: next_key(), version: 1, pyramid: Arc::new(LinePyramid::build(values)) }
 }
 
-/// A [`LineKind::Dots`] series, reduced so sparse markers stay visible when zoomed out.
+/// A [`LineKind::Dots`] or [`LineKind::Marks`] series, reduced so sparse markers stay visible
+/// when zoomed out.
 pub fn marker_ref(values: &[f64]) -> LineRef {
     LineRef { key: next_key(), version: 1, pyramid: Arc::new(LinePyramid::build_markers(values)) }
 }
@@ -148,7 +149,10 @@ pub fn visible_extent(
         }
         _ => p.extent(k, lo, hi)?,
     };
-    for o in overlays.iter().filter(|o| matches!(o.kind, LineKind::Line | LineKind::Dots | LineKind::Steps)) {
+    for o in overlays
+        .iter()
+        .filter(|o| matches!(o.kind, LineKind::Line | LineKind::Dots | LineKind::Marks | LineKind::Steps))
+    {
         let kk = level_for(v.bar_px, o.line.pyramid.levels());
         if let Some((a, b)) = o.line.pyramid.extent(kk, lo, hi) {
             l = l.min(a * o.scale);
@@ -254,8 +258,11 @@ fn overlay_cmds(overlays: &[Overlay], v: &Viewport, t: &PaneTransform, base: &St
                     t.y_hi /= o.scale;
                 }
             }
+            if o.kind == LineKind::Marks {
+                s.thickness_px *= 2.4;
+            }
             let range = match o.kind {
-                LineKind::Hist | LineKind::Dots | LineKind::Steps => {
+                LineKind::Hist | LineKind::Dots | LineKind::Marks | LineKind::Steps => {
                     let frac = if o.kind == LineKind::Steps { 1.0 } else { base.body_frac as f64 };
                     s.hist_width_bars = (frac * (1u64 << k) as f64) as f32;
                     let n = lp.level_len(k);

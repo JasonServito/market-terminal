@@ -1405,7 +1405,7 @@ impl ChartState {
         let p = ui.painter_at(rect);
         let len = self.bars.len();
         let (lo, hi) = v.visible_range(len);
-        let size = (v.bar_px as f32 * 0.9).clamp(9.0, 14.0);
+        let size = 15.0;
         let y = rect.bottom() - size * 0.5 - 3.0;
         let col = theme::palette().cyan;
         let mut best: Option<(f32, usize, Pos2)> = None;
@@ -1428,8 +1428,8 @@ impl ChartState {
             let badge = Rect::from_center_size(c, vec2(size, size) * pop);
             p.rect_filled(badge, CornerRadius::same(3), theme::card());
             p.rect_stroke(badge, CornerRadius::same(3), Stroke::new(1.0, col), StrokeKind::Inside);
-            if size * pop >= 8.0 {
-                p.text(c, Align2::CENTER_CENTER, "E", mono(size * 0.75 * pop), col);
+            if pop >= 0.6 {
+                p.text(c, Align2::CENTER_CENTER, "E", mono(11.0 * pop), col);
             }
             if let Some(h) = hover {
                 let d = h.distance(c);
