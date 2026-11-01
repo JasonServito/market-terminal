@@ -305,6 +305,7 @@ impl TerminalApp {
                     (&["SMA 50", "RSI", "IND"], "Indicators (see below)"),
                     (&["CMP MSFT"], "Compare, rebased to the main symbol"),
                     (&["TL", "HL", "VL", "FIB", "MAGNET"], "Drawing tools and snapping"),
+                    (&["EARNINGS"], "Earnings markers on a stock chart (SEC filings)"),
                 ],
             );
             para(
@@ -320,6 +321,7 @@ impl TerminalApp {
                     (&["RSI", "SMA 200", "BB 20 2.5"], "Toggle an indicator; numbers set its parameters"),
                     (&["IND", "IND VOLUME"], "Indicator picker: search by name, code or category"),
                     (&["AAPL ADX"], "Load a security and add the indicator"),
+                    (&["WTX", "WAVES"], "WaveTrend waves with cross dots; WAVES adds RSI and Stoch RSI"),
                     (&["CLEAR"], "Remove all indicators"),
                 ],
             );

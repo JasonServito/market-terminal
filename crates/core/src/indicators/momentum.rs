@@ -490,6 +490,25 @@ pub fn wavetrend(o: &Ohlcv, n1: usize, n2: usize) -> (Vec<f64>, Vec<f64>) {
     (wt1, wt2)
 }
 
+/// Where `fast` crosses `slow`: `slow`'s value at each bar where `fast` moves from below it
+/// to above (`up`) or from above it to below (`down`), NaN elsewhere. Marks WaveTrend's turns.
+pub fn crosses(fast: &[f64], slow: &[f64]) -> (Vec<f64>, Vec<f64>) {
+    let mut up = vec![NAN; fast.len()];
+    let mut down = vec![NAN; fast.len()];
+    for i in 1..fast.len().min(slow.len()) {
+        let (a0, b0, a1, b1) = (fast[i - 1], slow[i - 1], fast[i], slow[i]);
+        if ![a0, b0, a1, b1].iter().all(|v| v.is_finite()) {
+            continue;
+        }
+        if a0 <= b0 && a1 > b1 {
+            up[i] = b1;
+        } else if a0 >= b0 && a1 < b1 {
+            down[i] = b1;
+        }
+    }
+    (up, down)
+}
+
 /// Ehlers' cyber cycle with smoothing `alpha`, and its previous value as trigger.
 pub fn cyber_cycle(values: &[f64], alpha: f64) -> (Vec<f64>, Vec<f64>) {
     let cycle = from_first(values, |p| {
@@ -551,6 +570,17 @@ pub fn efficiency_ratio(values: &[f64], n: usize) -> Vec<f64> {
 mod tests {
     use super::*;
     use crate::Bar;
+
+    #[test]
+    fn crosses_mark_turns_at_the_slow_line() {
+        let fast = [1.0, 3.0, 4.0, 2.0, NAN, 5.0, 1.0];
+        let slow = [2.0, 2.0, 3.0, 3.0, 3.0, 3.0, 3.0];
+        let (up, down) = crosses(&fast, &slow);
+        let at =
+            |v: &[f64]| v.iter().enumerate().filter(|(_, x)| x.is_finite()).map(|(i, x)| (i, *x)).collect::<Vec<_>>();
+        assert_eq!(at(&up), [(1, 2.0)], "a gap (NaN) never makes a cross");
+        assert_eq!(at(&down), [(3, 3.0), (6, 3.0)]);
+    }
 
     fn near(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9 * (1.0 + b.abs())

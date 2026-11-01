@@ -69,6 +69,24 @@ fn vs_area(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     return out;
 }
 
+// Filled area from segment ii..ii+1 to the baseline (extra.w), e.g. oscillator waves. A
+// segment that crosses the baseline folds into two triangles that meet at the crossing.
+@vertex
+fn vs_fill(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut {
+    let a = pts[ii];
+    if (!(finite(a.y) && finite(pts[ii + 1u].y)) || a.x - u.rect.z >= u.anim.z) {
+        return degenerate();
+    }
+    let b = traced(a, pts[ii + 1u]);
+    let c = corner(vi);
+    let x = mix(x_ndc(a.x), x_ndc(b.x), c.x);
+    let top = mix(y_ndc(a.y), y_ndc(b.y), c.x);
+    var out: VsOut;
+    out.pos = vec4<f32>(x, mix(y_ndc(u.extra.w), top, c.y), 0.0, 1.0);
+    out.color = shade(u.color);
+    return out;
+}
+
 // Histogram column for point ii from the baseline (e.g. MACD histogram).
 @vertex
 fn vs_hist(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut {

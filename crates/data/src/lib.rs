@@ -26,6 +26,7 @@ pub mod alpaca;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cache;
 pub mod crypto;
+pub mod earnings;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod markets;
 pub mod remote;

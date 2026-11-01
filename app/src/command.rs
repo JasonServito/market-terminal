@@ -221,6 +221,7 @@ pub enum Function {
     Draw(Tool),
     ClearDrawings,
     Magnet,
+    Earnings,
     /// Congress trades: feed when used alone, per-ticker list after a symbol.
     Congress,
     Politician(String),
@@ -308,6 +309,7 @@ fn parse_function(head: &str, rest: &[&str]) -> Option<Function> {
         "VL" | "VLINE" => Function::Draw(Tool::Vertical),
         "FIB" => Function::Draw(Tool::Fib),
         "MAGNET" | "MAG" => Function::Magnet,
+        "EARNINGS" | "EVTS" => Function::Earnings,
         "CONG" | "CONGRESS" => Function::Congress,
         "POL" | "PROFILE" => Function::Politician(joined()),
         "TRACK" => Function::Track(joined()),
@@ -455,6 +457,7 @@ fn describe(f: &Function) -> String {
         Function::Draw(t) => format!("Draw {}", t.label()),
         Function::ClearDrawings => "Remove all drawings".into(),
         Function::Magnet => "Toggle magnet (snap to OHLC)".into(),
+        Function::Earnings => "Toggle earnings markers".into(),
         Function::Congress => "Congressional trades".into(),
         Function::Politician(n) => format!("Politician profile: {n}"),
         Function::Track(n) => format!("Track {n} (alert on new filings)"),

@@ -69,6 +69,8 @@ pub enum PaneSettings {
         show_volume: bool,
         #[serde(default = "yes")]
         show_congress: bool,
+        #[serde(default = "yes")]
+        show_earnings: bool,
         #[serde(default)]
         magnet: bool,
     },
@@ -273,6 +275,7 @@ pub fn chart_settings(symbol: &str, d: &crate::prefs::PanelDefaults) -> PaneSett
         compare: None,
         show_volume: d.show_volume,
         show_congress: d.congress_markers,
+        show_earnings: true,
         magnet: false,
     }
 }

@@ -290,8 +290,12 @@ pub fn sub_pane(
             }
         }
         let (a, b) = ext.unwrap_or((-1.0, 1.0));
-        // Histograms grow from zero, so keep zero in range.
-        if overlays.iter().any(|o| o.kind == LineKind::Hist) { (a.min(0.0), b.max(0.0)) } else { (a, b) }
+        // Histograms and fills grow from zero, so keep zero in range.
+        if overlays.iter().any(|o| matches!(o.kind, LineKind::Hist | LineKind::Fill)) {
+            (a.min(0.0), b.max(0.0))
+        } else {
+            (a, b)
+        }
     });
     let scale = if fixed.is_some() {
         PriceScale::new(l, h, false, height_px)
