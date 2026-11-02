@@ -70,9 +70,13 @@ pub enum Plot {
     Hist,
     /// A marker per defined value.
     Dots,
+    /// A larger marker per defined value, for signals that should stand out (crosses).
+    Marks,
     /// A flat dash across each bar, so a level that changes (a new session's pivot)
     /// starts afresh instead of joining the previous one.
     Steps,
+    /// The area between the line and zero, filled (oscillator waves).
+    Fill,
 }
 
 /// Colour role of an output; the app maps roles to its theme.
@@ -88,6 +92,8 @@ pub enum Tone {
     Down,
     /// The n-th colour of the theme's series palette.
     Series(u8),
+    /// A colour of its own, unpremultiplied RGBA, the same in every theme.
+    Fixed([u8; 4]),
 }
 
 #[derive(Debug, Clone)]
@@ -391,6 +397,25 @@ fn bands(b: Bands, middle: &'static str) -> Vec<Output> {
 
 fn with_signal(name: &'static str, (main, sig): (Vec<f64>, Vec<f64>)) -> Vec<Output> {
     vec![line(name, main), signal("Signal", sig)]
+}
+
+/// WaveTrend drawn as filled waves (the signal line dark, the main line light over it) with
+/// green and red dots where the main line crosses above or below the signal.
+fn waves(d: &Ohlcv, n1: usize, n2: usize) -> Vec<Output> {
+    let (wt1, wt2) = wavetrend(d, n1, n2);
+    let (turn_up, turn_down) = crosses(&wt1, &wt2);
+    vec![
+        out("Wave 2", wt2, Plot::Fill, Tone::Fixed([36, 86, 214, 235])),
+        out("Wave 1", wt1, Plot::Fill, Tone::Fixed([96, 176, 255, 150])),
+        out("Turn up", turn_up, Plot::Marks, Tone::Up),
+        out("Turn down", turn_down, Plot::Marks, Tone::Down),
+    ]
+}
+
+/// A 0..100 oscillator moved onto WaveTrend's scale: 50 becomes 0 and the range ±100, so
+/// 70 and 30 sit at ±40.
+fn centred(values: Vec<f64>) -> Vec<f64> {
+    values.into_iter().map(|v| (v - 50.0) * 2.0).collect()
 }
 
 fn macd_like(m: Macd, name: &'static str) -> Vec<Output> {
@@ -806,6 +831,30 @@ fn catalog() -> Vec<Def> {
             .n("Channel Length", 10.0)
             .n("Average Length", 21.0)
             .levels(&[-60.0, 0.0, 60.0]),
+        pane("WTX", "WaveTrend with Crosses", mom, |i, p| waves(&i.d, n(p, 0), n(p, 1)))
+            .alias(&["WTCROSS", "WTC"])
+            .n("Channel Length", 10.0)
+            .n("Average Length", 21.0)
+            .levels(&[-60.0, 0.0, 60.0]),
+        pane("WAVES", "Waves (WaveTrend with RSI and Stoch RSI)", mom, |i, p| {
+            let mut outs = waves(&i.d, n(p, 0), n(p, 1));
+            let s = stoch_rsi(i.c(), n(p, 2), n(p, 3), 3, 3);
+            // Between the waves and the cross dots, so the dots stay on top.
+            outs.splice(
+                2..2,
+                [
+                    out("RSI", centred(rsi(i.c(), n(p, 2))), Plot::Line, Tone::Fixed([186, 104, 255, 255])),
+                    out("Stoch RSI", centred(s.k), Plot::Line, Tone::Fixed([38, 214, 220, 255])),
+                ],
+            );
+            outs
+        })
+        .alias(&["CIPHER", "WAVE"])
+        .n("Channel Length", 9.0)
+        .n("Average Length", 12.0)
+        .n("RSI Length", 14.0)
+        .n("Stoch Length", 14.0)
+        .levels(&[-60.0, 0.0, 60.0]),
         pane("CYBER", "Ehlers Cyber Cycle", mom, |i, p| with_signal("Cycle", cyber_cycle(i.c(), p[0])))
             .alias(&["CYBERCYCLE"])
             .real("Alpha", 0.07, 0.01, 0.99)

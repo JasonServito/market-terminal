@@ -24,6 +24,7 @@ use tr_core::indicators::registry::{Input, Plot, Tone};
 use tr_core::{Bar, Security, Series, Timeframe};
 #[cfg(not(target_arch = "wasm32"))]
 use tr_data::BarCache;
+use tr_data::earnings::Earning;
 use tr_data::{Provider, Quote, SearchHit, YieldCurves, rt};
 
 use crate::command::IndicatorSpec;
@@ -105,6 +106,10 @@ pub enum Request {
         base: Arc<Vec<Bar>>,
     },
     Markers {
+        pane: PaneId,
+        symbol: String,
+    },
+    Earnings {
         pane: PaneId,
         symbol: String,
     },
@@ -267,6 +272,11 @@ pub enum Response {
         pane: PaneId,
         symbol: String,
         trades: Vec<Trade>,
+    },
+    Earnings {
+        pane: PaneId,
+        symbol: String,
+        earnings: Vec<Earning>,
     },
     Quotes(Vec<Quote>),
     Latest(Vec<Trade>),
@@ -487,8 +497,31 @@ fn cached_bars(_: &Shared, _: &str, _: Timeframe, _: usize) -> Option<Vec<Bar>> 
 #[cfg(target_arch = "wasm32")]
 fn cache_bars(_: &Shared, _: &str, _: Timeframe, _: &[Bar]) {}
 
+/// Earnings releases for a stock from SEC EDGAR, newest first; empty offline, for other
+/// asset classes and when EDGAR can't be reached.
+#[cfg(not(target_arch = "wasm32"))]
+async fn earnings_for(symbol: &str) -> Vec<Earning> {
+    static SOURCE: std::sync::OnceLock<Option<tr_data::earnings::Earnings>> = std::sync::OnceLock::new();
+    let sec = tr_data::security(symbol);
+    if sec.class != tr_core::AssetClass::Equity || std::env::var("TR_PROVIDER").is_ok_and(|p| p == "sample") {
+        return Vec::new();
+    }
+    let source = SOURCE
+        .get_or_init(|| tr_data::earnings::Earnings::new().map_err(|e| tracing::warn!("earnings source: {e:#}")).ok());
+    let Some(source) = source else { return Vec::new() };
+    source.for_ticker(&sec.ticker).await.unwrap_or_else(|e| {
+        tracing::warn!("earnings {}: {e:#}", sec.ticker);
+        Vec::new()
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn earnings_for(_: &str) -> Vec<Earning> {
+    Vec::new()
+}
+
 fn overlay(values: &[f64], color: egui::Color32, kind: LineKind) -> Overlay {
-    let line = if kind == LineKind::Dots { marker_ref(values) } else { line_ref(values) };
+    let line = if matches!(kind, LineKind::Dots | LineKind::Marks) { marker_ref(values) } else { line_ref(values) };
     Overlay { line, color: theme::rgba(color), kind, scale: 1.0 }
 }
 
@@ -508,11 +541,12 @@ pub fn build_indicators(
         .map(|(i, spec)| {
             let main = palette.series[i % colors];
             let mut outputs = spec.compute(&input);
-            // Columns first, so lines and markers draw over them.
-            outputs.sort_by_key(|o| o.plot != Plot::Hist);
+            // Columns and fills first, so lines and markers draw over them.
+            outputs.sort_by_key(|o| !matches!(o.plot, Plot::Hist | Plot::Fill));
             let overlays = outputs
                 .into_iter()
                 .map(|o| {
+                    let mut alpha = None;
                     let color = match o.tone {
                         Tone::Main => main,
                         Tone::Signal if main == palette.amber => palette.cyan,
@@ -521,14 +555,24 @@ pub fn build_indicators(
                         Tone::Up => palette.up,
                         Tone::Down => palette.down,
                         Tone::Series(k) => palette.series[(i + 1 + k as usize) % colors],
+                        Tone::Fixed([r, g, b, a]) => {
+                            alpha = Some(a as f32 / 255.0);
+                            egui::Color32::from_rgb(r, g, b)
+                        }
                     };
                     let kind = match o.plot {
                         Plot::Line => LineKind::Line,
                         Plot::Hist => LineKind::Hist,
                         Plot::Dots => LineKind::Dots,
+                        Plot::Marks => LineKind::Marks,
                         Plot::Steps => LineKind::Steps,
+                        Plot::Fill => LineKind::Fill,
                     };
-                    (o.name.to_string(), overlay(&o.values, color, kind))
+                    let mut ov = overlay(&o.values, color, kind);
+                    if let Some(a) = alpha {
+                        ov.color[3] = a;
+                    }
+                    (o.name.to_string(), ov)
                 })
                 .collect();
             BuiltIndicator { spec: spec.clone(), overlays }
@@ -690,6 +734,10 @@ async fn handle(s: &Arc<Shared>, req: Request) {
                 Vec::new()
             };
             s.send(Response::Markers { pane, symbol, trades });
+        }
+        Request::Earnings { pane, symbol } => {
+            let earnings = earnings_for(&symbol).await;
+            s.send(Response::Earnings { pane, symbol, earnings });
         }
         Request::Quotes(symbols) => match s.provider.quotes(&symbols).await {
             Ok(q) => s.send(Response::Quotes(q)),

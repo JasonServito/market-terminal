@@ -1,5 +1,5 @@
 //! Chart pane: GPU-rendered price/volume/indicator panes with egui-drawn axes, legend,
-//! crosshair, drawings and congressional trade markers.
+//! crosshair, drawings, congressional trade markers and earnings markers.
 
 use std::sync::Arc;
 
@@ -15,6 +15,7 @@ use tr_chart::viewport::{PriceScale, Viewport};
 use tr_congress::{Trade, TxType};
 use tr_core::indicators::registry::{self, Category};
 use tr_core::{AssetClass, Bar, Security, Timeframe};
+use tr_data::earnings::Earning;
 
 use crate::command::{IndicatorSpec, Range};
 use crate::congress_view::Action;
@@ -77,6 +78,7 @@ pub struct ChartState {
     pub magnet: bool,
     pub show_volume: bool,
     pub show_congress: bool,
+    pub show_earnings: bool,
     pub indicators: Vec<IndicatorSpec>,
     pub drawings: Vec<Drawing>,
     pub compare: Option<String>,
@@ -101,6 +103,10 @@ pub struct ChartState {
     compare_line: Option<LineRef>,
     compare_scale: f64,
     markers: Vec<Trade>,
+    /// Earnings releases for a stock, newest first.
+    earnings: Vec<Earning>,
+    /// Renewed when a load's earnings arrive, which pops their markers in.
+    earnings_key: u64,
     pending_range: Option<Range>,
     draw: DrawState,
     hover_marker: Option<usize>,
@@ -132,6 +138,7 @@ impl ChartState {
             magnet: false,
             show_volume: true,
             show_congress: true,
+            show_earnings: true,
             indicators: crate::command::default_indicators(),
             drawings: Vec::new(),
             compare: None,
@@ -152,6 +159,8 @@ impl ChartState {
             compare_line: None,
             compare_scale: 1.0,
             markers: Vec::new(),
+            earnings: Vec::new(),
+            earnings_key: 0,
             pending_range: None,
             draw: DrawState::default(),
             hover_marker: None,
@@ -180,6 +189,7 @@ impl ChartState {
         self.glide = None;
         self.compare_line = None;
         self.markers.clear();
+        self.earnings.clear();
         // Never show the previous symbol's bars under the new title.
         self.bars = Arc::new(Vec::new());
         self.gpu = None;
@@ -194,6 +204,9 @@ impl ChartState {
         self.last_live = None;
         if self.sec.has_congress_trades() {
             w.send(Request::Markers { pane: self.id, symbol: self.symbol.clone() });
+        }
+        if self.sec.class == AssetClass::Equity {
+            w.send(Request::Earnings { pane: self.id, symbol: self.symbol.clone() });
         }
     }
 
@@ -480,6 +493,15 @@ impl ChartState {
                 self.markers_key = crate::anim::fresh_key();
             }
             self.markers = trades;
+        }
+    }
+
+    pub fn on_earnings(&mut self, symbol: &str, earnings: Vec<Earning>) {
+        if symbol == self.symbol {
+            if self.earnings.is_empty() && !earnings.is_empty() {
+                self.earnings_key = crate::anim::fresh_key();
+            }
+            self.earnings = earnings;
         }
     }
 
@@ -934,6 +956,9 @@ impl ChartState {
         if self.show_congress {
             self.paint_markers(ui, price_rect, &v, &scale, hover, &reveal);
         }
+        if self.show_earnings {
+            self.paint_earnings(ui, price_rect, &v, hover, &reveal);
+        }
 
         // ---- crosshair + legend ----
         let hovered_bar = hover.and_then(|p| v.bar_at((p.x - price_rect.left()) as f64, len));
@@ -1083,6 +1108,9 @@ impl ChartState {
                 self.actions.push(Action::OpenTicker(self.symbol.clone()));
                 ui.close();
             }
+        }
+        if self.sec.class == AssetClass::Equity {
+            ui.checkbox(&mut self.show_earnings, "Earnings Markers");
         }
     }
 
@@ -1362,6 +1390,85 @@ impl ChartState {
             let t = &self.markers[mi];
             hover_card(ui, c, t);
         }
+    }
+}
+
+impl ChartState {
+    /// Earnings markers: an "E" badge along the bottom of the price pane at each release,
+    /// with a card on hover. They pop in behind the reveal sweep like the Congress markers.
+    fn paint_earnings(&self, ui: &Ui, rect: Rect, v: &Viewport, hover: Option<Pos2>, reveal: &Reveal) {
+        if self.earnings.is_empty() || self.bars.is_empty() {
+            return;
+        }
+        let arrive =
+            crate::anim::progress(ui.ctx(), egui::Id::new(("chart-earnings", self.id)), self.earnings_key, 0.6);
+        let p = ui.painter_at(rect);
+        let len = self.bars.len();
+        let (lo, hi) = v.visible_range(len);
+        let size = 15.0;
+        let y = rect.bottom() - size * 0.5 - 3.0;
+        let col = theme::palette().cyan;
+        let mut best: Option<(f32, usize, Pos2)> = None;
+        for (ei, e) in self.earnings.iter().enumerate() {
+            // Around the US close, so a daily bar stamped at the open still holds it.
+            let Some(ts) = e.date.and_hms_opt(20, 0, 0).map(|d| d.and_utc().timestamp()) else { continue };
+            let idx = self.index_of_ts(ts).floor();
+            if idx < lo as f64 || idx >= hi as f64 || idx < 0.0 || idx >= len as f64 {
+                continue;
+            }
+            let i = idx as usize;
+            let x = rect.left() + v.x_center(i) as f32;
+            let swept = ((reveal.front - (i as f64 + 0.5)) / reveal.ramp as f64).clamp(0.0, 1.0) as f32;
+            let lead = 0.5 * (x - rect.left()) / rect.width().max(1.0);
+            let pop = crate::anim::ease_out_back(swept.min(crate::anim::span(arrive, lead, lead + 0.5)));
+            if pop <= 0.01 {
+                continue;
+            }
+            let c = Pos2::new(x, y);
+            let badge = Rect::from_center_size(c, vec2(size, size) * pop);
+            p.rect_filled(badge, CornerRadius::same(3), theme::card());
+            p.rect_stroke(badge, CornerRadius::same(3), Stroke::new(1.0, col), StrokeKind::Inside);
+            if pop >= 0.6 {
+                p.text(c, Align2::CENTER_CENTER, "E", mono(11.0 * pop), col);
+            }
+            if let Some(h) = hover {
+                let d = h.distance(c);
+                if d <= size * 0.5 + 3.0 && best.is_none_or(|b| d < b.0) {
+                    best = Some((d, ei, c));
+                }
+            }
+        }
+        if let Some((_, ei, c)) = best {
+            earnings_card(ui, c, &self.earnings[ei]);
+        }
+    }
+}
+
+/// Hover card for an earnings marker.
+fn earnings_card(ui: &Ui, at: Pos2, e: &Earning) {
+    let mut lines = vec![(format!("Earnings  {}", e.date.format("%b %-d, %Y")), theme::palette().cyan)];
+    if let Some(period) = e.period {
+        lines.push((format!("Period ended {}", period.format("%b %-d, %Y")), text()));
+    }
+    let source = if e.form == "8-K" { "SEC 8-K, Item 2.02".to_string() } else { format!("SEC {} filing date", e.form) };
+    lines.push((source, muted()));
+    let w = lines.iter().map(|(l, _)| l.len()).max().unwrap_or(10) as f32 * 7.2 + 14.0;
+    let h = lines.len() as f32 * 14.0 + 8.0;
+    let screen = ui.ctx().content_rect();
+    let mut min = at + vec2(12.0, -h - 12.0);
+    if min.x + w > screen.right() {
+        min.x = at.x - w - 12.0;
+    }
+    if min.y < screen.top() {
+        min.y = at.y + 12.0;
+    }
+    let card = Rect::from_min_size(min, vec2(w, h));
+    let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("earnings-card"));
+    let p = ui.ctx().layer_painter(layer);
+    p.rect_filled(card, 0.0, Color32::from_rgb(16, 16, 16));
+    p.rect_stroke(card, 0.0, Stroke::new(1.0, amber_dim()), StrokeKind::Inside);
+    for (k, (l, c)) in lines.iter().enumerate() {
+        p.text(card.left_top() + vec2(7.0, 4.0 + k as f32 * 14.0), Align2::LEFT_TOP, l, mono(11.5), *c);
     }
 }
 

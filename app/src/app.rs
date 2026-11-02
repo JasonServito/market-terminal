@@ -248,6 +248,7 @@ impl PaneKind {
                 compare: c.compare.clone(),
                 show_volume: c.show_volume,
                 show_congress: c.show_congress,
+                show_earnings: c.show_earnings,
                 magnet: c.magnet,
             },
             PaneKind::Feed { filter } => {
@@ -292,6 +293,7 @@ impl PaneKind {
                 compare,
                 show_volume,
                 show_congress,
+                show_earnings,
                 magnet,
             } => {
                 let mut c = ChartState::new(0, &symbol, tf);
@@ -302,6 +304,7 @@ impl PaneKind {
                 c.compare = compare;
                 c.show_volume = show_volume;
                 c.show_congress = show_congress;
+                c.show_earnings = show_earnings;
                 c.magnet = magnet;
                 PaneKind::Chart(Box::new(c))
             }
@@ -810,6 +813,7 @@ impl TerminalApp {
             Function::Draw(t) => self.with_chart(|c, _| c.start_tool(t)),
             Function::ClearDrawings => self.with_chart(|c, _| c.drawings.clear()),
             Function::Magnet => self.with_chart(|c, _| c.magnet = !c.magnet),
+            Function::Earnings => self.with_chart(|c, _| c.show_earnings = !c.show_earnings),
             Function::Congress => self.open_panel(PaneKind::Feed { filter: FeedFilter::default() }),
             Function::Politician(q) if q.trim().is_empty() => self.open_panel(PaneKind::Politicians),
             Function::Politician(q) => self.open_panel(PaneKind::Profile { query: q, data: None, loading: true }),
@@ -991,6 +995,11 @@ impl TerminalApp {
                 Response::Markers { pane, symbol, trades } => {
                     if let Some(c) = self.chart_mut(pane) {
                         c.on_markers(&symbol, trades);
+                    }
+                }
+                Response::Earnings { pane, symbol, earnings } => {
+                    if let Some(c) = self.chart_mut(pane) {
+                        c.on_earnings(&symbol, earnings);
                     }
                 }
                 Response::Quotes(q) => {
