@@ -497,8 +497,8 @@ fn cached_bars(_: &Shared, _: &str, _: Timeframe, _: usize) -> Option<Vec<Bar>> 
 #[cfg(target_arch = "wasm32")]
 fn cache_bars(_: &Shared, _: &str, _: Timeframe, _: &[Bar]) {}
 
-/// Earnings releases for a stock from SEC EDGAR, newest first; empty offline, for other
-/// asset classes and when EDGAR can't be reached.
+/// Earnings reports for a stock (SEC EDGAR dates and figures, Yahoo Finance estimates), next
+/// report first; empty offline, for other asset classes and when no source can be reached.
 #[cfg(not(target_arch = "wasm32"))]
 async fn earnings_for(symbol: &str) -> Vec<Earning> {
     static SOURCE: std::sync::OnceLock<Option<tr_data::earnings::Earnings>> = std::sync::OnceLock::new();
@@ -509,7 +509,7 @@ async fn earnings_for(symbol: &str) -> Vec<Earning> {
     let source = SOURCE
         .get_or_init(|| tr_data::earnings::Earnings::new().map_err(|e| tracing::warn!("earnings source: {e:#}")).ok());
     let Some(source) = source else { return Vec::new() };
-    source.for_ticker(&sec.ticker).await.unwrap_or_else(|e| {
+    source.for_ticker(&sec.ticker, &tr_data::yahoo::yahoo_symbol(&sec)).await.unwrap_or_else(|e| {
         tracing::warn!("earnings {}: {e:#}", sec.ticker);
         Vec::new()
     })

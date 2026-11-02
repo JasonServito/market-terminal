@@ -202,6 +202,8 @@ impl MarketData for YahooProvider {
 }
 
 const OPTIONS: &str = "https://query2.finance.yahoo.com/v7/finance/options";
+const QUOTE_SUMMARY: &str = "https://query2.finance.yahoo.com/v10/finance/quoteSummary";
+const EARNINGS_CALENDAR: &str = "https://finance.yahoo.com/calendar/earnings";
 
 impl YahooProvider {
     /// A session crumb: visiting fc.yahoo.com sets the consent cookie, then getcrumb
@@ -244,6 +246,44 @@ impl YahooProvider {
             return parse_options(&body);
         }
         Err(last_err.unwrap_or_else(|| anyhow!("yahoo options failed")))
+    }
+
+    /// Raw `quoteSummary` JSON for some modules of a Yahoo symbol (`earningsHistory`,
+    /// `calendarEvents`, …). Needs the session crumb, like options.
+    pub async fn quote_summary(&self, symbol: &str, modules: &str) -> Result<String> {
+        let mut last_err = None;
+        for refresh in [false, true] {
+            let crumb = self.crumb(refresh).await?;
+            let q = [("modules", modules), ("formatted", "false"), ("crumb", crumb.as_str())];
+            let resp = self.client.get(format!("{QUOTE_SUMMARY}/{}", urlencode(symbol))).query(&q).send().await?;
+            let status = resp.status();
+            let body = resp.text().await?;
+            if status.as_u16() == 401 || body.contains("Invalid Crumb") {
+                last_err = Some(anyhow!("yahoo quoteSummary: crumb rejected"));
+                continue;
+            }
+            if !status.is_success() {
+                bail!("yahoo quoteSummary {symbol}: HTTP {status}");
+            }
+            return Ok(body);
+        }
+        Err(last_err.unwrap_or_else(|| anyhow!("yahoo quoteSummary failed")))
+    }
+
+    /// The earnings calendar page for a symbol: an HTML table of past and upcoming report
+    /// dates with EPS estimates, reported EPS and surprises, years back.
+    pub async fn earnings_calendar(&self, symbol: &str) -> Result<String> {
+        let resp = self
+            .client
+            .get(EARNINGS_CALENDAR)
+            .query(&[("symbol", symbol), ("offset", "0"), ("size", "50")])
+            .header(reqwest::header::ACCEPT, "text/html")
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            bail!("yahoo earnings calendar {symbol}: HTTP {}", resp.status());
+        }
+        Ok(resp.text().await?)
     }
 
     /// Headlines related to a Yahoo symbol or free-text query.
