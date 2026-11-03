@@ -305,7 +305,10 @@ impl TerminalApp {
                     (&["SMA 50", "RSI", "IND"], "Indicators (see below)"),
                     (&["CMP MSFT"], "Compare, rebased to the main symbol"),
                     (&["TL", "HL", "VL", "FIB", "MAGNET"], "Drawing tools and snapping"),
-                    (&["EARNINGS"], "Earnings markers on a stock chart (SEC filings)"),
+                    (
+                        &["EARNINGS"],
+                        "Earnings markers on a stock chart: green beat, red miss, purple next; click one for details",
+                    ),
                 ],
             );
             para(

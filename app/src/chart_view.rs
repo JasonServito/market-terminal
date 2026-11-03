@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use chrono::{Datelike, NaiveDate};
 use egui::{
     Align2, Color32, CornerRadius, CursorIcon, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui, UiBuilder, pos2,
     vec2,
@@ -15,7 +16,7 @@ use tr_chart::viewport::{PriceScale, Viewport};
 use tr_congress::{Trade, TxType};
 use tr_core::indicators::registry::{self, Category};
 use tr_core::{AssetClass, Bar, Security, Timeframe};
-use tr_data::earnings::Earning;
+use tr_data::earnings::{Earning, Outcome};
 
 use crate::command::{IndicatorSpec, Range};
 use crate::congress_view::Action;
@@ -103,8 +104,10 @@ pub struct ChartState {
     compare_line: Option<LineRef>,
     compare_scale: f64,
     markers: Vec<Trade>,
-    /// Earnings releases for a stock, newest first.
+    /// Earnings reports for a stock: the next one first, then newest first.
     earnings: Vec<Earning>,
+    /// The report whose details card is open (by date), from a click on its badge.
+    open_earning: Option<NaiveDate>,
     /// Renewed when a load's earnings arrive, which pops their markers in.
     earnings_key: u64,
     pending_range: Option<Range>,
@@ -160,6 +163,7 @@ impl ChartState {
             compare_scale: 1.0,
             markers: Vec::new(),
             earnings: Vec::new(),
+            open_earning: None,
             earnings_key: 0,
             pending_range: None,
             draw: DrawState::default(),
@@ -190,6 +194,7 @@ impl ChartState {
         self.compare_line = None;
         self.markers.clear();
         self.earnings.clear();
+        self.open_earning = None;
         // Never show the previous symbol's bars under the new title.
         self.bars = Arc::new(Vec::new());
         self.gpu = None;
@@ -305,6 +310,9 @@ impl ChartState {
 
     /// Esc: cancel an in-progress drawing, then deselect. Returns whether it consumed the key.
     pub fn cancel(&mut self) -> bool {
+        if self.open_earning.take().is_some() {
+            return true;
+        }
         if self.draw.tool.is_some() || self.draw.selected.is_some() {
             self.draw = DrawState::default();
             true
@@ -957,7 +965,7 @@ impl ChartState {
             self.paint_markers(ui, price_rect, &v, &scale, hover, &reveal);
         }
         if self.show_earnings {
-            self.paint_earnings(ui, price_rect, &v, hover, &reveal);
+            self.paint_earnings(ui, price_rect, &v, hover, &reveal, &plot_resp);
         }
 
         // ---- crosshair + legend ----
@@ -1394,65 +1402,322 @@ impl ChartState {
 }
 
 impl ChartState {
-    /// Earnings markers: an "E" badge along the bottom of the price pane at each release,
-    /// with a card on hover. They pop in behind the reveal sweep like the Congress markers.
-    fn paint_earnings(&self, ui: &Ui, rect: Rect, v: &Viewport, hover: Option<Pos2>, reveal: &Reveal) {
+    /// Bar index of an earnings date: the bar holding it, or for a report still to come, where
+    /// its bar will be (counting weekdays, since the axis skips weekends and nights).
+    fn earning_index(&self, date: NaiveDate) -> Option<f64> {
+        let last = self.bars.last()?;
+        let ts = date.and_hms_opt(20, 0, 0)?.and_utc().timestamp();
+        if ts < last.ts + self.tf.seconds() {
+            return Some(self.index_of_ts(ts).floor());
+        }
+        let last_day = chrono::DateTime::from_timestamp(last.ts, 0)?.date_naive();
+        let weekdays =
+            last_day.iter_days().skip(1).take_while(|d| *d <= date).filter(|d| d.weekday().number_from_monday() <= 5);
+        let per_day = match self.tf {
+            Timeframe::D1 => 1.0,
+            Timeframe::W1 => 0.2,
+            Timeframe::MN1 => 1.0 / 21.0,
+            // A US session is six and a half hours.
+            tf => (23_400.0 / tf.seconds() as f64).ceil(),
+        };
+        let ahead = (weekdays.count() as f64 * per_day).floor().max(1.0);
+        Some((self.bars.len() - 1) as f64 + ahead)
+    }
+
+    /// Earnings markers: an "E" badge along the bottom of the price pane at each report,
+    /// green for an EPS beat, red for a miss and purple for the next report. Hovering shows a
+    /// summary; a click opens the details card, and a click elsewhere or Esc closes it. They
+    /// pop in behind the reveal sweep like the Congress markers.
+    fn paint_earnings(
+        &mut self,
+        ui: &Ui,
+        rect: Rect,
+        v: &Viewport,
+        hover: Option<Pos2>,
+        reveal: &Reveal,
+        plot_resp: &egui::Response,
+    ) {
         if self.earnings.is_empty() || self.bars.is_empty() {
             return;
         }
         let arrive =
             crate::anim::progress(ui.ctx(), egui::Id::new(("chart-earnings", self.id)), self.earnings_key, 0.6);
-        let p = ui.painter_at(rect);
         let len = self.bars.len();
-        let (lo, hi) = v.visible_range(len);
         let size = 15.0;
         let y = rect.bottom() - size * 0.5 - 3.0;
-        let col = theme::palette().cyan;
-        let mut best: Option<(f32, usize, Pos2)> = None;
+        let reach = size * 0.5 + 3.0;
+        let mut badges: Vec<(usize, Pos2, f32)> = Vec::new();
         for (ei, e) in self.earnings.iter().enumerate() {
-            // Around the US close, so a daily bar stamped at the open still holds it.
-            let Some(ts) = e.date.and_hms_opt(20, 0, 0).map(|d| d.and_utc().timestamp()) else { continue };
-            let idx = self.index_of_ts(ts).floor();
-            if idx < lo as f64 || idx >= hi as f64 || idx < 0.0 || idx >= len as f64 {
+            let Some(idx) = self.earning_index(e.date) else { continue };
+            if idx < 0.0 || (idx >= len as f64 && !e.upcoming) {
                 continue;
             }
-            let i = idx as usize;
-            let x = rect.left() + v.x_center(i) as f32;
-            let swept = ((reveal.front - (i as f64 + 0.5)) / reveal.ramp as f64).clamp(0.0, 1.0) as f32;
+            let x = rect.left() + v.x_of(idx + 0.5) as f32;
+            if x < rect.left() - size || x > rect.right() + size {
+                continue;
+            }
+            let swept = ((reveal.front - (idx + 0.5)) / reveal.ramp as f64).clamp(0.0, 1.0) as f32;
             let lead = 0.5 * (x - rect.left()) / rect.width().max(1.0);
             let pop = crate::anim::ease_out_back(swept.min(crate::anim::span(arrive, lead, lead + 0.5)));
-            if pop <= 0.01 {
-                continue;
-            }
-            let c = Pos2::new(x, y);
-            let badge = Rect::from_center_size(c, vec2(size, size) * pop);
-            p.rect_filled(badge, CornerRadius::same(3), theme::card());
-            p.rect_stroke(badge, CornerRadius::same(3), Stroke::new(1.0, col), StrokeKind::Inside);
-            if pop >= 0.6 {
-                p.text(c, Align2::CENTER_CENTER, "E", mono(11.0 * pop), col);
-            }
-            if let Some(h) = hover {
-                let d = h.distance(c);
-                if d <= size * 0.5 + 3.0 && best.is_none_or(|b| d < b.0) {
-                    best = Some((d, ei, c));
-                }
+            if pop > 0.01 {
+                badges.push((ei, Pos2::new(x, y), pop));
             }
         }
-        if let Some((_, ei, c)) = best {
-            earnings_card(ui, c, &self.earnings[ei]);
+        let nearest = |at: Pos2| {
+            badges
+                .iter()
+                .map(|(ei, c, _)| (at.distance(*c), *ei, *c))
+                .filter(|(d, _, _)| *d <= reach)
+                .min_by(|a, b| a.0.total_cmp(&b.0))
+        };
+
+        // A click on a badge toggles its card; a click anywhere else on the plot closes it.
+        if plot_resp.clicked() && self.draw.tool.is_none() {
+            let hit = plot_resp.interact_pointer_pos().and_then(nearest).map(|(_, ei, _)| self.earnings[ei].date);
+            self.open_earning = hit.filter(|d| self.open_earning != Some(*d));
+        }
+
+        let p = ui.painter_at(rect);
+        for &(ei, c, pop) in &badges {
+            let e = &self.earnings[ei];
+            let col = earning_color(e);
+            let open = self.open_earning == Some(e.date);
+            let badge = Rect::from_center_size(c, vec2(size, size) * pop);
+            let (fill, letter) = if open {
+                (col, Color32::BLACK)
+            } else {
+                (theme::card().lerp_to_gamma(col, if e.outcome() == Outcome::Unknown { 0.0 } else { 0.22 }), col)
+            };
+            p.rect_filled(badge, CornerRadius::same(3), fill);
+            p.rect_stroke(badge, CornerRadius::same(3), Stroke::new(1.0, col), StrokeKind::Inside);
+            if pop >= 0.6 {
+                p.text(c, Align2::CENTER_CENTER, "E", mono(11.0 * pop), letter);
+            }
+        }
+
+        let hovered = hover.and_then(nearest);
+        if let Some((_, ei, c)) = hovered {
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+            if self.open_earning != Some(self.earnings[ei].date) {
+                earnings_card(ui, c, &self.earnings[ei]);
+            }
+        }
+        let open = self.open_earning.and_then(|d| badges.iter().find(|(ei, _, _)| self.earnings[*ei].date == d));
+        if let Some(&(ei, c, _)) = open {
+            let id = egui::Id::new(("earnings-details", self.id));
+            if earnings_details(ui.ctx(), id, c - vec2(0.0, size * 0.5 + 6.0), &self.earnings[ei]) {
+                self.open_earning = None;
+            }
         }
     }
 }
 
-/// Hover card for an earnings marker.
-fn earnings_card(ui: &Ui, at: Pos2, e: &Earning) {
-    let mut lines = vec![(format!("Earnings  {}", e.date.format("%b %-d, %Y")), theme::palette().cyan)];
-    if let Some(period) = e.period {
-        lines.push((format!("Period ended {}", period.format("%b %-d, %Y")), text()));
+const UPCOMING: Color32 = Color32::from_rgb(170, 125, 255);
+
+/// Badge colour: green beat, red miss, purple next report, grey in line, cyan when there's
+/// no estimate to judge by.
+fn earning_color(e: &Earning) -> Color32 {
+    match e.outcome() {
+        Outcome::Beat => theme::up(),
+        Outcome::Miss => theme::down(),
+        Outcome::Upcoming => UPCOMING,
+        Outcome::InLine => text(),
+        Outcome::Unknown => theme::palette().cyan,
     }
-    let source = if e.form == "8-K" { "SEC 8-K, Item 2.02".to_string() } else { format!("SEC {} filing date", e.form) };
-    lines.push((source, muted()));
-    let w = lines.iter().map(|(l, _)| l.len()).max().unwrap_or(10) as f32 * 7.2 + 14.0;
+}
+
+fn day(d: NaiveDate) -> String {
+    d.format("%b %-d, %Y").to_string()
+}
+
+fn eps(v: f64) -> String {
+    format!("{v:.2}")
+}
+
+/// 94.93B, 1.02T, 512.40M.
+fn money(v: f64) -> String {
+    let a = v.abs();
+    let (div, unit) = if a >= 1e12 {
+        (1e12, "T")
+    } else if a >= 1e9 {
+        (1e9, "B")
+    } else if a >= 1e6 {
+        (1e6, "M")
+    } else if a >= 1e3 {
+        (1e3, "K")
+    } else {
+        (1.0, "")
+    };
+    format!("{:.2}{unit}", v / div)
+}
+
+/// "+0.08 (+4.52%)" for a surprise, with its colour.
+fn surprise_text(s: tr_data::earnings::Surprise, fmt: fn(f64) -> String) -> (String, Color32) {
+    let sign = if s.diff >= 0.0 { "+" } else { "-" };
+    let mut out = format!("{sign}{}", fmt(s.diff.abs()));
+    if let Some(pct) = s.pct {
+        out.push_str(&format!(" ({pct:+.2}%)"));
+    }
+    let col = if s.diff.abs() < 0.005 {
+        text()
+    } else if s.diff > 0.0 {
+        theme::up()
+    } else {
+        theme::down()
+    };
+    (out, col)
+}
+
+fn outcome_label(e: &Earning) -> &'static str {
+    match e.outcome() {
+        Outcome::Beat => "Beat",
+        Outcome::Miss => "Missed",
+        Outcome::InLine => "In line",
+        Outcome::Upcoming => "Upcoming",
+        Outcome::Unknown => "No estimate",
+    }
+}
+
+/// The details card for one report, above its badge: dates, EPS (GAAP, reported, estimate,
+/// surprise) and revenue (reported, estimate, surprise). Returns true when its close button
+/// was pressed.
+fn earnings_details(ctx: &egui::Context, id: egui::Id, anchor: Pos2, e: &Earning) -> bool {
+    let shown = crate::anim::ease_out(crate::anim::appear(ctx, id.with(e.date), 0.16));
+    let col = earning_color(e);
+    let mut close = false;
+    egui::Area::new(id)
+        .order(egui::Order::Foreground)
+        .pivot(Align2::CENTER_BOTTOM)
+        .fixed_pos(anchor + vec2(0.0, 6.0 * (1.0 - shown)))
+        .constrain(true)
+        .show(ctx, |ui| {
+            ui.multiply_opacity(shown);
+            egui::Frame::new()
+                .fill(theme::card())
+                .stroke(Stroke::new(1.0, theme::border()))
+                .corner_radius(CornerRadius::same(theme::CARD_RADIUS))
+                .shadow(egui::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(80) })
+                .inner_margin(12.0)
+                .show(ui, |ui| {
+                    // Fixed, or the right-aligned header row stretches the card across the screen.
+                    ui.set_width(290.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Earnings & Revenue").font(ui_font(13.5)).color(text()).strong());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let x = ui.add(
+                                egui::Button::new(RichText::new("×").font(ui_font(15.0)).color(muted())).frame(false),
+                            );
+                            close = x.on_hover_text("Close (Esc)").clicked();
+                            let pill = RichText::new(format!(" {} ", outcome_label(e))).font(ui_font(11.0));
+                            let pill = if e.outcome() == Outcome::Miss || e.upcoming {
+                                pill.color(Color32::WHITE).background_color(col)
+                            } else {
+                                pill.color(col).background_color(theme::card().lerp_to_gamma(col, 0.2))
+                            };
+                            ui.label(pill);
+                        });
+                    });
+                    ui.add_space(6.0);
+                    let label = |ui: &mut Ui, s: &str| ui.label(RichText::new(s).font(mono(11.5)).color(muted()));
+                    let value =
+                        |ui: &mut Ui, s: String, c: Color32| ui.label(RichText::new(s).font(mono(11.5)).color(c));
+                    let section = |ui: &mut Ui, s: &str| {
+                        ui.add_space(8.0);
+                        ui.label(RichText::new(s).font(ui_font(10.5)).color(muted()).strong());
+                        ui.add_space(2.0);
+                    };
+                    // One grid per section (a grid can't hold spacing); a shared first-column
+                    // width keeps their values lined up.
+                    let grid = |ui: &mut Ui, name: &str, rows: &mut dyn FnMut(&mut Ui)| {
+                        egui::Grid::new(id.with(name))
+                            .num_columns(2)
+                            .min_col_width(110.0)
+                            .spacing(vec2(16.0, 4.0))
+                            .show(ui, |ui| rows(ui));
+                    };
+                    let dash = || "—".to_string();
+                    grid(ui, "dates", &mut |ui| {
+                        label(ui, "Date");
+                        let when = if e.upcoming { format!("{} (expected)", day(e.date)) } else { day(e.date) };
+                        value(ui, when, text());
+                        ui.end_row();
+                        label(ui, "Period ending");
+                        let period = match e.period {
+                            Some(p) if e.upcoming => format!("{} (est.)", day(p)),
+                            Some(p) => day(p),
+                            None => dash(),
+                        };
+                        value(ui, period, text());
+                        ui.end_row();
+                    });
+                    section(ui, "EARNINGS PER SHARE");
+                    grid(ui, "eps", &mut |ui| {
+                        if !e.upcoming {
+                            label(ui, "GAAP (diluted)");
+                            value(ui, e.eps_gaap.map(eps).unwrap_or_else(dash), text());
+                            ui.end_row();
+                            label(ui, "Reported");
+                            value(ui, e.eps_actual.map(eps).unwrap_or_else(dash), text());
+                            ui.end_row();
+                        }
+                        label(ui, "Estimate");
+                        value(ui, e.eps_estimate.map(eps).unwrap_or_else(dash), text());
+                        ui.end_row();
+                        if !e.upcoming {
+                            label(ui, "Surprise");
+                            let (s, c) = e.eps_surprise().map(|s| surprise_text(s, eps)).unwrap_or((dash(), muted()));
+                            value(ui, s, c);
+                            ui.end_row();
+                        }
+                    });
+                    section(ui, "REVENUE");
+                    grid(ui, "revenue", &mut |ui| {
+                        if !e.upcoming {
+                            label(ui, "Reported");
+                            value(ui, e.revenue.map(money).unwrap_or_else(dash), text());
+                            ui.end_row();
+                        }
+                        label(ui, "Estimate");
+                        value(ui, e.revenue_estimate.map(money).unwrap_or_else(dash), text());
+                        ui.end_row();
+                        if !e.upcoming {
+                            label(ui, "Surprise");
+                            let (s, c) =
+                                e.revenue_surprise().map(|s| surprise_text(s, money)).unwrap_or((dash(), muted()));
+                            value(ui, s, c);
+                            ui.end_row();
+                        }
+                    });
+                    ui.add_space(8.0);
+                    let source = match e.form.as_str() {
+                        _ if e.upcoming => "Estimates: Yahoo Finance".to_string(),
+                        "" => "Estimates and EPS: Yahoo Finance".to_string(),
+                        f => format!("Date: SEC {f} · Figures: SEC filings · Estimates: Yahoo Finance"),
+                    };
+                    ui.label(RichText::new(source).font(ui_font(10.0)).color(muted()));
+                });
+        });
+    close
+}
+
+/// Hover card for an earnings marker: the result in one line and a hint to click.
+fn earnings_card(ui: &Ui, at: Pos2, e: &Earning) {
+    let col = earning_color(e);
+    let head = if e.upcoming { "Next earnings" } else { "Earnings" };
+    let mut lines = vec![(format!("{head}  {}", day(e.date)), col)];
+    let summary = match (e.outcome(), e.eps_actual, e.eps_estimate) {
+        (Outcome::Upcoming, _, Some(est)) => Some(format!("EPS estimate {}", eps(est))),
+        (Outcome::Beat | Outcome::Miss | Outcome::InLine, Some(a), Some(est)) => {
+            let pct = e.eps_surprise().and_then(|s| s.pct).map(|p| format!(" ({p:+.1}%)")).unwrap_or_default();
+            Some(format!("{}: EPS {} vs {} est.{pct}", outcome_label(e), eps(a), eps(est)))
+        }
+        _ => e.period.map(|p| format!("Period ended {}", day(p))),
+    };
+    if let Some(s) = summary {
+        lines.push((s, text()));
+    }
+    lines.push(("Click for details".to_string(), muted()));
+    let w = lines.iter().map(|(l, _)| l.chars().count()).max().unwrap_or(10) as f32 * 7.2 + 14.0;
     let h = lines.len() as f32 * 14.0 + 8.0;
     let screen = ui.ctx().content_rect();
     let mut min = at + vec2(12.0, -h - 12.0);
